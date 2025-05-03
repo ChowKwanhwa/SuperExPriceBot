@@ -4,6 +4,7 @@ import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from test_superex import SuperExAPI
+import re
 
 # 加载.env文件
 load_dotenv()
@@ -24,49 +25,64 @@ logger = logging.getLogger(__name__)
 # 创建 SuperEx API 实例
 api = SuperExAPI()
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """发送开始消息"""
-    await update.message.reply_text('欢迎使用 SuperEx 价格查询机器人！\n请直接发送交易对符号（如 BTC 或 ETH）来查询价格。')
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """发送帮助消息"""
-    await update.message.reply_text('直接发送交易对符号（如 BTC 或 ETH）来查询价格。')
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理用户消息"""
-    symbol = update.message.text.strip().upper()
+def format_price_message(ticker_data):
+    """格式化价格信息消息"""
+    if "error" in ticker_data:
+        return f"Error: {ticker_data['error']}"
     
-    if not symbol:
-        await update.message.reply_text('请输入交易对符号')
+    return (
+        f"💰 {ticker_data['symbol']} Price Info:\n\n"
+        f"Current Price: ${ticker_data['last_price']:,.2f}\n"
+        f"24h High: ${ticker_data['24h_high']:,.2f}\n"
+        f"24h Low: ${ticker_data['24h_low']:,.2f}\n"
+        f"24h Volume: {ticker_data['24h_volume']:,.2f} {ticker_data['symbol'].split('_')[0]}\n"
+        f"24h Change: {ticker_data['24h_change']}%"
+    )
+
+async def handle_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理价格查询命令"""
+    if not update.message or not update.message.text:
         return
-
-    # 如果用户只输入了币种，自动添加 _USDT
-    if '_' not in symbol:
-        symbol = f'{symbol}_USDT'
-
-    try:
-        # 获取市场数据
-        market_data = api.get_market_data(symbol)
         
-        if market_data:
-            # 格式化响应消息
-            response = (
-                f"🏦 {symbol} 价格信息:\n\n"
-                f"💰 当前价格: {market_data['last']}\n"
-                f"📈 24h 最高: {market_data['high']}\n"
-                f"📉 24h 最低: {market_data['low']}\n"
-                f"💎 24h 成交量: {market_data['volume']}\n"
-                f"📊 24h 涨跌: {market_data['change']}%"
-            )
-        else:
-            response = f"❌ 未找到 {symbol} 的价格信息"
-            
-        await update.message.reply_text(response)
-    except Exception as e:
-        logger.error(f"Error handling message: {e}")
-        await update.message.reply_text(f"❌ 获取 {symbol} 价格时出错，请稍后重试")
+    command = update.message.text[1:].split()[0].upper()  # 去掉/并获取第一个词
+    if command in ["START", "HELP"]:  # 忽略 start 和 help 命令
+        return
+        
+    # 添加 _USDT 后缀
+    if '_' not in command:
+        command = f"{command}_USDT"
+        
+    # 获取价格信息
+    price_info = api.get_market_summary(command)
+    
+    # 发送响应
+    await update.message.reply_text(
+        format_price_message(price_info),
+        parse_mode='HTML'
+    )
 
-def main():
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理 /start 命令"""
+    await update.message.reply_text(
+        'Hi! I am SuperEx Price Bot! 🤖\n\n'
+        'Use commands like /btc or /eth to get price information.\n\n'
+        'Examples:\n'
+        '/btc - for BTC/USDT price\n'
+        '/eth - for ETH/USDT price\n'
+        '/bnb - for BNB/USDT price'
+    )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理 /help 命令"""
+    await update.message.reply_text(
+        'Use commands to get price information:\n\n'
+        'Examples:\n'
+        '/btc - Shows BTC/USDT price\n'
+        '/eth - Shows ETH/USDT price\n'
+        '/dot - Shows DOT/USDT price'
+    )
+
+def main() -> None:
     """启动机器人"""
     # 从环境变量获取 token
     token = os.getenv('BOT_TOKEN')
@@ -74,16 +90,19 @@ def main():
         logger.error("No token found! Please set BOT_TOKEN environment variable.")
         return
 
-    # 创建应用
+    # 创建 Application
     application = Application.builder().token(token).build()
 
-    # 添加处理程序
+    # 注册命令处理器
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # 注册价格查询命令处理器
+    # 使用正则表达式过滤器匹配以/开头后跟字母的命令
+    price_filter = filters.Regex(r'^/[a-zA-Z]+$')
+    application.add_handler(MessageHandler(price_filter, handle_price_command))
 
     # 启动机器人
-    logger.info("Bot starting...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
